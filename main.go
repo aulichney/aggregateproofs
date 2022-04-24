@@ -4,22 +4,93 @@ import (
 	"C"
 	"fmt"
 	mcl "github.com/alinush/go-mcl"
-	kzg2 "github.com/protolambda/go-kzg"
-	//kzg2 "github.com/aulichney/go-aSVC/go-kzg"
-	bls "github.com/protolambda/go-kzg/bls"
-	"github.com/sshravan/go-poly/ff"
 	"math/bits"
+	//kzg2 "github.com/protolambda/go-kzg"
+	kzg2 "github.com/aulichney/go-kzg"
+	bls "github.com/aulichney/go-kzg/bls"
+	"github.com/sshravan/go-poly/ff"
 	"math/rand"
 )
 
-//go list -m all | grep github.com/aulichney/go-aSVC/go-kzg | awk '{print $2}'
-////go mod edit -replace github.com/protolambda/go-kzg@v0.0.0=github.com/aulichney/go-aSVC/go-kzg@v1.2.3
-//kzg2 "github.com/protolambda/go-kzg"
-//hbls "github.com/herumi/bls-eth-go-binary/bls"
-//"github.com/protolambda/go-kzg/bls"
+//eventually move this somewhere else
+func nextPowOf2(v uint64) uint64 {
+	if v == 0 {
+		return 1
+	}
+	return uint64(1) << bits.Len64(v-1)
+}
+
+// Returns true if polynomial A is a zero polynomial.
+func IsPolyZero(a []bls.Fr) bool {
+
+	n := len(a)
+	if n == 0 {
+		panic("IsPolyZero Error")
+	}
+	var flag bool
+	flag = true
+	for i := 0; i < n && flag == true; i++ {
+		flag = flag && bls.EqualZero(&a[i])
+	}
+	return flag
+}
+
+//  Removes extraneous zero entries from in vector representation of polynomial.
+//  Example - Degree-4 Polynomial: [0, 1, 2, 3, 4, 0, 0, 0, 0] -> [0, 1, 2, 3, 4]
+//  Note: Simplest condensed form is a zero polynomial of vector form: [0]
+func PolyCondense(a []bls.Fr) []bls.Fr {
+	n := len(a)
+	if n == 0 {
+		panic("PolyCondense Error")
+	}
+
+	i := n
+	for i > 1 {
+		if bls.EqualZero(&a[i-1]) != true {
+			break
+		}
+		i--
+	}
+	return a[:i]
+}
+
+// Compute a(x) * b(x)
+func PolyMul(a []bls.Fr, b []bls.Fr) []bls.Fr {
+	if IsPolyZero(a) || IsPolyZero(b) {
+		return []bls.Fr{bls.ZERO}
+	}
+
+	aLen := len(a)
+	bLen := len(b)
+	if aLen == bLen && aLen == 1 {
+		c := make([]bls.Fr, 1, 1)
+		bls.MulModFr(&c[0], &a[0], &b[0])
+		return c
+	}
+	n := uint64(2 * ff.Max(aLen, bLen))
+	n = nextPowOf2(n)
+
+	var padding []bls.Fr
+
+	padding = make([]bls.Fr, n-uint64(aLen), n-uint64(aLen))
+	a = append(a, padding...)
+
+	padding = make([]bls.Fr, n-uint64(bLen), n-uint64(bLen))
+	b = append(b, padding...)
+
+	l := uint8(bits.Len64(n)) - 1 // n = 8 => 3 or 4?
+	fs := kzg2.NewFFTSettings(l)
+
+	evalsA, _ := fs.FFT(a, false)
+	evalsB, _ := fs.FFT(b, false)
+
+	res, _ := fs.FFT(bls.MulVecFr(evalsA, evalsB), true)
+	res = res[:(aLen + bLen - 1)]
+	res = PolyCondense(res)
+	return res
+}
 
 func SubProductTree(a []bls.Fr) [][][]bls.Fr {
-
 	// SubProdTree
 	// Needs to be power of two
 	// (x - a_1)(x - a_2)(x - a_3)(x - a_4)(x - a_5)(x - a_6)(x - a_7)(x - a_8)
@@ -36,19 +107,21 @@ func SubProductTree(a []bls.Fr) [][][]bls.Fr {
 	var M [][][]bls.Fr
 	M = make([][][]bls.Fr, l+1, l+1)
 	M[0] = make([][]bls.Fr, n, n)
+
 	for j := uint64(0); j < n; j++ {
 		M[0][j] = make([]bls.Fr, 2)
+
 		bls.NegModFr(&M[0][j][0], &a[j])
-		ff.IntAsFr(&M[0][j][1], 1)
+		bls.IntAsFr(&M[0][j][1], 1)
 	}
 
-	var x []ff.Fr
-	var y []ff.Fr
+	var x []bls.Fr
+	var y []bls.Fr
 	var index int64
 	index = 0
 	for i := uint8(1); i <= l; i++ {
 		L := uint64(1) << (l - i)
-		M[i] = make([][]ff.Fr, L, L)
+		M[i] = make([][]bls.Fr, L, L)
 		for j := uint64(0); j < L; j++ {
 			x = M[i-1][index]
 			index++
@@ -60,6 +133,37 @@ func SubProductTree(a []bls.Fr) [][][]bls.Fr {
 	}
 
 	return M
+}
+
+// Given M(x) computes  M'(x)
+// For first derivative and multi-point evaluation:
+// This [paper](https://arxiv.org/pdf/2002.10304.pdf) claims there is a faster way to do this
+// Page 10 under interpolation
+// Not sure how it is different from doing subproduct tree on M'(x)
+func PolyDifferentiate(a []bls.Fr) []bls.Fr {
+	n := uint64(len(a))
+	if n == 0 {
+		panic("PolyDifferentiate: Input is empty")
+	}
+	if n == 1 {
+		return make([]bls.Fr, 1)
+	}
+	c := make([]bls.Fr, n, n)
+	var temp bls.Fr
+	for i := uint64(1); i < n; i++ {
+		bls.IntAsFr(&temp, i)
+		bls.MulModFr(&c[i], &a[i], &temp)
+	}
+	return c[1:]
+}
+
+func testPoly(polynomial ...uint64) []bls.Fr {
+	n := len(polynomial)
+	polynomialFr := make([]bls.Fr, n, n)
+	for i := 0; i < n; i++ {
+		bls.AsFr(&polynomialFr[i], polynomial[i])
+	}
+	return polynomialFr
 }
 
 func main() {
@@ -135,6 +239,7 @@ func main() {
 	x := uint64(5431)
 	var xFr bls.Fr
 	bls.AsFr(&xFr, x)
+
 	cosetScale := uint8(3)
 	coset := make([]bls.Fr, 1<<cosetScale, 1<<cosetScale)
 	s1, s2 := kzg2.GenerateTestingSetup("1927409816240961209460912649124", 8+1)
@@ -146,7 +251,33 @@ func main() {
 		//fmt.Printf("coset %d: %s\n", k, bls.FrStr(&coset[k]))
 	}
 
-	x = uint64(3)
+	//test := SubProductTree(*coset)
+	//aFr := SubProductTree(coset)
+	//fmt.Print(aFr)
+
+	//polynomial2 := [16]uint64{1, 2, 3, 4, 7, 7, 7, 7, 13, 13, 13, 13, 13, 13, 13, 13}
+	polynomial2 := testPoly(1, 2, 3, 4)
+
+	//polynomial2Fr := make([]bls.Fr, len(polynomial2), len(polynomial2))
+
+	for i := 0; i < len(polynomial2); i++ {
+		fmt.Printf("poly coeff %d: %s \n", i, bls.FrStr(&polynomial2[i]))
+	}
+
+	polydiff := PolyDifferentiate(polynomial2)
+
+	for i := 0; i < len(polydiff); i++ {
+		fmt.Printf("poly diff coeff %d: %s \n", i, bls.FrStr(&polydiff[i]))
+	}
+
+	//print(bls.FrStr(&polynomial2Fr))
+
+	//test2 := PolyDifferentiate(polynomial2Fr)
+
+	//fmt.Print(bls.FrStr(&test2))
+
+	//check relation between ff.Fr and
+	/*x = uint64(3)
 	y := uint64(4)
 
 	var ffFr ff.Fr
@@ -168,32 +299,31 @@ func main() {
 	bls.AsFr(&blsFr2, y)
 	bls.DivModFr(&blsFr3, &blsFr2, &blsFr)
 
-	print(bls.FrStr(&blsFr3))
+	print(bls.FrStr(&blsFr3))*/
+
+	//bls12381.NewFr().setUint()
 
 	//test := fft.SubProductTree(*coset)
 	//fmt.Print(test)
 
-	/*
-		cosetScale := uint8(3)
-		coset := make([]ff.Fr, 1<<cosetScale, 1<<cosetScale)
-		//s1, s2 = kzg2.GenerateTestingSetup("1927409816240961209460912649124", 8+1)
-		//ks = kzg2.NewKZGSettings(kzg2.NewFFTSettings(cosetScale), s1, s2)
+	/*cosetScale = uint8(3)
+	coset = make([]bls.Fr, 1<<cosetScale, 1<<cosetScale)
+	//s1, s2 = kzg2.GenerateTestingSetup("1927409816240961209460912649124", 8+1)
+	//ks = kzg2.NewKZGSettings(kzg2.NewFFTSettings(cosetScale), s1, s2)
 
-		x := uint64(5431)
-		var xFr ff.Fr
-		ff.AsFr(&xFr, x)
+	x = uint64(5431)
+	var xFr bls.Fr
+	bls.AsFr(&xFr, x)
 
-		for k := 0; k < len(coset); k++ {
-			//fmt.Printf("rootz %d: %s\n", k, bls.FrStr(&ks.ExpandedRootsOfUnity[k]))
-			ff.MulModFr(&coset[k], &xFr, &fft.expandRootOfUnity[k])
-			//fmt.Printf("coset %d: %s\n", i, bls.FrStr(&coset[i]))
-		}
+	for k := 0; k < len(coset); k++ {
+		//fmt.Printf("rootz %d: %s\n", k, bls.FrStr(&ks.ExpandedRootsOfUnity[k]))
+		bls.MulModFr(&coset[k], &xFr, &fft.expandRootOfUnity[k])
+		//fmt.Printf("coset %d: %s\n", i, bls.FrStr(&coset[i]))
+	}
 
-		ff.AsFr(&coset)
+	bls.AsFr(&coset)
 
-		test := fft.SubProductTree(*coset)
-		fmt.Print(test)
+	test := SubProductTree(*coset)
+	fmt.Print(test)*/
 
-
-	*/
 }
