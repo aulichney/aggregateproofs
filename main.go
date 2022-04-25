@@ -174,6 +174,7 @@ func main() {
 	const numProofs = int(3)
 	const numCoeffs = int(16)
 
+	//fill with random coefficients
 	polyVec := [numProofs][numCoeffs]uint64{}
 	for i := 0; i < numProofs; i++ {
 		for j := 0; j < numCoeffs; j++ {
@@ -182,27 +183,30 @@ func main() {
 	}
 
 	for i := 0; i < numProofs; i++ {
+		//setup
 		fs := kzg2.NewFFTSettings(4)
 		s1, s2 := kzg2.GenerateTestingSetup("1927409816240961209460912649124", 16+1)
 		ks := kzg2.NewKZGSettings(fs, s1, s2)
 
 		var polynomial = polyVec[i]
 
-		//polynomial := [16]uint64{1, 2, 3, 4, 7, 7, 7, 7, 13, 13, 13, 13, 13, 13, 13, 13}
+		//convert coeff vector to Fr
 		polynomialFr := make([]bls.Fr, len(polynomial), len(polynomial))
 
 		for j := 0; j < len(polynomial); j++ {
 			bls.AsFr(&polynomialFr[j], polynomial[j])
 		}
+		//commit to this poly
 		commitment := ks.CommitToPoly(polynomialFr)
 
 		//evaluate polynomial at roots of unity
 		x := uint64(5431)
 		var xFr bls.Fr
 		bls.AsFr(&xFr, x)
+
 		cosetScale := uint8(3)
 		coset := make([]bls.Fr, 1<<cosetScale, 1<<cosetScale)
-		s1, s2 = kzg2.GenerateTestingSetup("1927409816240961209460912649124", 8+1)
+		s1, s2 = kzg2.GenerateTestingSetup("1927409816240961209460912649124", 1<<cosetScale+1)
 		ks = kzg2.NewKZGSettings(kzg2.NewFFTSettings(cosetScale), s1, s2)
 
 		for k := 0; k < len(coset); k++ {
@@ -231,44 +235,100 @@ func main() {
 		}
 	}
 
-	//need to make bls.Fr into ff.Fr so that I can use the subproduct tree function
-	//at point where I have a vector of proofs
-
-	//need to compute A(x) using subproduct trees
-
-	x := uint64(5431)
+	//compute A(x) using subproduct trees
+	//x := uint64(5431)
+	x := uint64(2)
 	var xFr bls.Fr
 	bls.AsFr(&xFr, x)
 
 	cosetScale := uint8(3)
 	coset := make([]bls.Fr, 1<<cosetScale, 1<<cosetScale)
-	s1, s2 := kzg2.GenerateTestingSetup("1927409816240961209460912649124", 8+1)
+	s1, s2 := kzg2.GenerateTestingSetup("1927409816240961209460912649124", 1<<cosetScale+1)
 	ks := kzg2.NewKZGSettings(kzg2.NewFFTSettings(cosetScale), s1, s2)
 
 	for k := 0; k < len(coset); k++ {
-		//fmt.Printf("rootz %d: %s\n", k, bls.FrStr(&ks.ExpandedRootsOfUnity[k]))
+		fmt.Printf("rootz %d: %s\n", k, bls.FrStr(&ks.ExpandedRootsOfUnity[k]))
 		bls.MulModFr(&coset[k], &xFr, &ks.ExpandedRootsOfUnity[k])
-		//fmt.Printf("coset %d: %s\n", k, bls.FrStr(&coset[k]))
+		fmt.Printf("coset %d: %s\n", k, bls.FrStr(&coset[k]))
 	}
 
 	//test := SubProductTree(*coset)
-	//aFr := SubProductTree(coset)
-	//fmt.Print(aFr)
+
+	/*for k := 0; k < len(aFr); k++ {
+		//fmt.Printf("rootz %d: %s\n", k, bls.FrStr(&ks.ExpandedRootsOfUnity[k]))
+		fmt.Printf("subproduct %d: %s\n", k, bls.FrStr(&aFr[k]))
+	}*/
+
+	//aPrimeFr := PolyDifferentiate(aFr)
 
 	//polynomial2 := [16]uint64{1, 2, 3, 4, 7, 7, 7, 7, 13, 13, 13, 13, 13, 13, 13, 13}
 	polynomial2 := testPoly(1, 2, 3, 4)
 
-	//polynomial2Fr := make([]bls.Fr, len(polynomial2), len(polynomial2))
+	testTree := SubProductTree(polynomial2)
+	fmt.Printf("aFr: %s \n", bls.FrStr(&testTree[len(testTree)-1][0][1]))
 
-	for i := 0; i < len(polynomial2); i++ {
-		fmt.Printf("poly coeff %d: %s \n", i, bls.FrStr(&polynomial2[i]))
+	aFr := SubProductTree(coset)
+
+	/*for i := 0; i < len(aFr); i++ {
+		for j := 0; j < len(aFr[i]); j++ {
+			fmt.Printf("aFr %d, %d: %s \n", i, j, bls.FrStr(&aFr[i][j][0]))
+			fmt.Printf("aFr %d, %d: %s \n", i, j, bls.FrStr(&aFr[i][j][1]))
+			fmt.Printf("\n")
+		}
+	}*/
+
+	//fmt.Printf("aFr FINAL: %s \n", bls.FrStr(&aFr[len(aFr)-1][0][0]))
+
+	aPrimeFr := PolyDifferentiate(aFr[len(aFr)-1][0])
+
+	for i := 0; i < len(aFr); i++ {
+		fmt.Printf("poly coeff AP %d: %s \n", i, bls.FrStr(&aFr[i][0][0]))
 	}
 
-	polydiff := PolyDifferentiate(polynomial2)
+	for i := 0; i < len(aPrimeFr); i++ {
+		fmt.Printf("poly coeff APRIME %d: %s \n", i, bls.FrStr(&aPrimeFr[i]))
+	}
+
+	/*fmt.Print("TEST TREE \n")
+	fmt.Print(len(testTree))
+	fmt.Print(len(testTree[0]))
+	fmt.Print(len(testTree[0][0]))
+	fmt.Print("\n")
+
+	for i := 0; i < len(testTree); i++ {
+		for j := 0; j < len(testTree[i]); j++ {
+			fmt.Printf("aFr %d, %d: %s \n", i, j, bls.FrStr(&testTree[i][j][0]))
+			fmt.Printf("aFr %d, %d: %s \n", i, j, bls.FrStr(&testTree[i][j][1]))
+			fmt.Printf("\n")
+		}
+	}*/
+
+	//fmt.Print("\n")
+	//fmt.Print(bls.FrStr(&testTree[0][1][0]))
+	//fmt.Print("\n")
+	//
+	//fmt.Printf("test print: %s\n", bls.FrStr(&polynomial2[0]))
+	//fmt.Printf("test print len: %d\n", len(polynomial2))
+	//fmt.Print(len(aFr))
+	//fmt.Print("separation")
+	//fmt.Print(len(aFr[0]))
+
+	//for i := 0; i < len(aFr); i++ {
+	//	fmt.Printf("aFr %d: %s \n", i, bls.FrStr(&aFr[i]))
+	//}
+	//fmt.Print(reflect.TypeOf(aFr[len(aFr)]))
+
+	//polynomial2Fr := make([]bls.Fr, len(polynomial2), len(polynomial2))
+
+	//for i := 0; i < len(polynomial2); i++ {
+	//	fmt.Printf("poly coeff %d: %s \n", i, bls.FrStr(&polynomial2[i]))
+	//}
+
+	/*polydiff := PolyDifferentiate(polynomial2)
 
 	for i := 0; i < len(polydiff); i++ {
 		fmt.Printf("poly diff coeff %d: %s \n", i, bls.FrStr(&polydiff[i]))
-	}
+	}*/
 
 	//print(bls.FrStr(&polynomial2Fr))
 
