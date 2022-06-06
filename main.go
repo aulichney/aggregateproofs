@@ -12,7 +12,7 @@ import (
 	"math/rand"
 )
 
-//eventually move this somewhere else
+//eventually move these leading functions somewhere else
 func nextPowOf2(v uint64) uint64 {
 	if v == 0 {
 		return 1
@@ -182,6 +182,8 @@ func main() {
 		}
 	}
 
+	proofVec := [numProofs]*bls.G1Point{}
+
 	for i := 0; i < numProofs; i++ {
 		//setup
 		fs := kzg2.NewFFTSettings(4)
@@ -210,9 +212,9 @@ func main() {
 		ks = kzg2.NewKZGSettings(kzg2.NewFFTSettings(cosetScale), s1, s2)
 
 		for k := 0; k < len(coset); k++ {
-			fmt.Printf("rootz %d: %s\n", k, bls.FrStr(&ks.ExpandedRootsOfUnity[k]))
+			//fmt.Printf("rootz %d: %s\n", k, bls.FrStr(&ks.ExpandedRootsOfUnity[k]))
 			bls.MulModFr(&coset[k], &xFr, &ks.ExpandedRootsOfUnity[k])
-			fmt.Printf("coset %d: %s\n", i, bls.FrStr(&coset[i]))
+			//fmt.Printf("coset %d: %s\n", i, bls.FrStr(&coset[i]))
 		}
 
 		//evaluate polynomial at each point
@@ -226,6 +228,8 @@ func main() {
 		proof := ks.ComputeProofMulti(polynomialFr, x, uint64(len(coset)))
 		fmt.Printf("proof %d: %s\n", i, bls.StrG1(proof))
 
+		proofVec[i] = proof
+
 		//Check that proof matches expected
 		if !ks.CheckProofMulti(commitment, proof, &xFr, ys) {
 			fmt.Printf("could not verify proof %d\n\n", i)
@@ -236,12 +240,12 @@ func main() {
 	}
 
 	//compute A(x) using subproduct trees
-	//x := uint64(5431)
-	x := uint64(2)
+	x := uint64(5431)
+	//x := uint64(1)
 	var xFr bls.Fr
 	bls.AsFr(&xFr, x)
 
-	cosetScale := uint8(3)
+	cosetScale := uint8(2)
 	coset := make([]bls.Fr, 1<<cosetScale, 1<<cosetScale)
 	s1, s2 := kzg2.GenerateTestingSetup("1927409816240961209460912649124", 1<<cosetScale+1)
 	ks := kzg2.NewKZGSettings(kzg2.NewFFTSettings(cosetScale), s1, s2)
@@ -250,6 +254,56 @@ func main() {
 		fmt.Printf("rootz %d: %s\n", k, bls.FrStr(&ks.ExpandedRootsOfUnity[k]))
 		bls.MulModFr(&coset[k], &xFr, &ks.ExpandedRootsOfUnity[k])
 		fmt.Printf("coset %d: %s\n", k, bls.FrStr(&coset[k]))
+	}
+
+	coset_test := make([]bls.Fr, 1<<cosetScale, 1<<cosetScale)
+	for k := 0; k < len(coset_test); k++ {
+		//fmt.Printf("rootz %d: %s\n", k, bls.FrStr(&ks.ExpandedRootsOfUnity[k]))
+		bls.MulModFr(&coset_test[k], &xFr, &ks.ExpandedRootsOfUnity[k])
+		fmt.Printf("coset TEST %d: %s\n", k, bls.FrStr(&coset_test[k]))
+	}
+
+	//testFr := SubProductTree(coset_test)
+	//for i := 0; i < len(testFr); i++ {
+	//	fmt.Printf("poly coeff divisor %d: %s \n", i, bls.FrStr(&testFr[i]))
+	//}
+
+	//aFr := SubProductTree(coset)
+	//aPrimeFr := PolyDifferentiate(aFr[len(aFr)-1][0])
+
+	//instead of subproduct trees try the way that compute proofs multi uses:
+	// divisor = [-pow(x, n, MODULUS)] + [0] * (n - 1) + [1]
+	n := uint64(len(coset))
+	divisor := make([]bls.Fr, n+1, n+1)
+	//var xFr bls.Fr
+	//bls.AsFr(&xFr, x)
+
+	var xPowN, tmp bls.Fr
+	for i := uint64(0); i < n; i++ {
+		bls.MulModFr(&tmp, &xPowN, &xFr)
+		bls.CopyFr(&xPowN, &tmp)
+	}
+
+	// -pow(x, n, MODULUS)
+	bls.SubModFr(&divisor[0], &bls.ZERO, &xPowN)
+	// [0] * (n - 1)
+	for i := uint64(1); i < n; i++ {
+		bls.CopyFr(&divisor[i], &bls.ZERO)
+	}
+	// 1
+	bls.CopyFr(&divisor[n], &bls.ONE)
+
+	//divisor has len(coset) + 1 elements
+	//fmt.Printf("Test New Product: %s", bls.FrStr(&divisor[8]))
+
+	divisorPrimeFr := PolyDifferentiate(divisor)
+
+	for i := 0; i < len(divisor); i++ {
+		fmt.Printf("poly coeff divisor %d: %s \n", i, bls.FrStr(&divisor[i]))
+	}
+
+	for i := 0; i < len(divisorPrimeFr); i++ {
+		fmt.Printf("poly coeff divisor PRIME %d: %s \n", i, bls.FrStr(&divisorPrimeFr[i]))
 	}
 
 	//test := SubProductTree(*coset)
@@ -262,20 +316,28 @@ func main() {
 	//aPrimeFr := PolyDifferentiate(aFr)
 
 	//polynomial2 := [16]uint64{1, 2, 3, 4, 7, 7, 7, 7, 13, 13, 13, 13, 13, 13, 13, 13}
-	polynomial2 := testPoly(1, 2, 3, 4)
+	/*polynomial2 := testPoly(12, 0)
 
 	testTree := SubProductTree(polynomial2)
 	fmt.Printf("aFr: %s \n", bls.FrStr(&testTree[len(testTree)-1][0][1]))
 
 	aFr := SubProductTree(coset)
 
-	/*for i := 0; i < len(aFr); i++ {
+	for i := 0; i < len(aFr); i++ {
 		for j := 0; j < len(aFr[i]); j++ {
-			fmt.Printf("aFr %d, %d: %s \n", i, j, bls.FrStr(&aFr[i][j][0]))
-			fmt.Printf("aFr %d, %d: %s \n", i, j, bls.FrStr(&aFr[i][j][1]))
+			fmt.Printf("aFr TEST %d, %d, 0: %s \n", i, j, bls.FrStr(&aFr[i][j][0]))
+			fmt.Printf("aFr TEST %d, %d, 1: %s \n", i, j, bls.FrStr(&aFr[i][j][1]))
 			fmt.Printf("\n")
 		}
-	}*/
+	}
+
+	var temp bls.Fr
+	var temp2 bls.Fr
+	bls.IntAsFr(&temp, 1)
+	bls.IntAsFr(&temp2, 2)
+
+	fmt.Printf("temp1: %s \n", bls.FrStr(&temp))
+	fmt.Printf("temp2: %s \n", bls.FrStr(&temp2))
 
 	//fmt.Printf("aFr FINAL: %s \n", bls.FrStr(&aFr[len(aFr)-1][0][0]))
 
@@ -287,7 +349,7 @@ func main() {
 
 	for i := 0; i < len(aPrimeFr); i++ {
 		fmt.Printf("poly coeff APRIME %d: %s \n", i, bls.FrStr(&aPrimeFr[i]))
-	}
+	}*/
 
 	/*fmt.Print("TEST TREE \n")
 	fmt.Print(len(testTree))
